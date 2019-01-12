@@ -1,0 +1,191 @@
+1. 微信用户扫描二维码，系统会接收用户扫描的二维码的数据，并且判断此二维码是否有效。本步骤核心代码如下所示。
+	public String execute() throws Exception {
+		String reValue = UUIDLocker.get3DESEncrypt(p, SystemContext.QRCODE_SPKEY);
+		ServiceQrcodeInfo myServiceQrcodeInfo = null;
+		int qrState = -1;//状态：1-启用；2-作废；3-已抽奖；0-未启用
+		if(null != listServiceQrcodeInfo){
+			for(int i =0;i<listServiceQrcodeInfo.size();i++){
+				ServiceQrcodeInfo sqi = listServiceQrcodeInfo.get(i);
+				if(null != sqi){
+					qrState = sqi.getQrState();
+				}				
+			if(null != myServiceQrcodeInfo){
+				//获取微信ticket，根据ticket查找图片。并且把二维码跟ticket绑定
+				ConfigWeiXin configWeiXin = new ConfigWeiXin();
+				ticket = configWeiXin.getTicket();//myServiceQrcodeInfo.getQrNum()
+			}
+			if(null != myServiceQrcodeInfo){
+				myServiceQrcodeInfo.setQrNumTemp(ticket);//绑定临时二维码
+				serviceQrcodeInfoService.update(myServiceQrcodeInfo);
+				//执行
+				setForwardView(LUCK_DRAW_JSP);
+			}else{
+				setForwardView(DO_NOT_LUCK_DRAW_JSP);
+			}
+		}
+		return SUCCESS;
+	}
+2．如果代码系统接收到的二维码数据是合法有效的，会返回抽奖界面供用户抽奖，本步骤的核心代码如下所示。 
+function drawRouletteWheel() {    
+  var canvas = document.getElementById("wheelcanvas");    
+  if (canvas.getContext) {
+	  var arc = Math.PI / (turnplate.restaraunts.length/2);
+	  var ctx = canvas.getContext("2d");
+	  ctx.clearRect(0,0,422,422);
+	  ctx.strokeStyle = "#FFBE04";
+	  ctx.font = '16px Microsoft YaHei';      
+	  for(var i = 0; i < turnplate.restaraunts.length; i++) {       
+		  var angle = turnplate.startAngle + i * arc;
+		  ctx.fillStyle = turnplate.colors[i];
+		  ctx.beginPath();
+		  ctx.arc(211, 211, turnplate.outsideRadius, angle, angle + arc, false);  		 
+		  ctx.rotate(angle + arc / 2 + Math.PI / 2);		  
+		  if(text.indexOf("元")>0){//流量包
+			  var texts = text.split("M");
+			  for(var j = 0; j<texts.length; j++){
+				  ctx.font = j == 0?'bold 20px Microsoft YaHei':'16px Microsoft YaHei';
+				  if(j == 0){
+					  ctx.fillText(texts[j], -ctx.measureText(texts[j]).width / 2, j * line_height);
+				  }
+			  }
+		  }			  
+	 }     
+3.系统后台根据设置的抽奖规则和中奖概率判别用户是否中奖，中奖的奖项，本过程的核心代码如下。
+public int[] doLottery(String wxOpenid){
+		int[] temp = new int[3];		
+		ServiceCjrule cj = null;
+		//获取抽奖规则信息列表
+		List<ServiceCjrule> listServiceCjrules = serviceCjinfoService.findCjrule();
+		//所以需要读取未抽奖的并且抽奖表标号不为空的ServiceCjrule对象
+		ServiceCjinfo serviceCjinfo = serviceCjinfoService.alreadyDraw(wxOpenid);
+		//2016-04-26，为了未启用也能抽奖，做的一个临时折中
+		ServiceCjinfo serviceCjinfoT = serviceCjinfoService.notDraw(wxOpenid);
+					int allCount = 10000000;//中奖率。放大1千万倍。
+			//创建用于存储概率信息的数组
+			List<Integer> orignalRates = new ArrayList<Integer>();
+			for (ServiceCjrule listServiceCjrule : listServiceCjrules) {
+				Double oddDouble = listServiceCjrule.getOdd();
+				//System.out.println("oddDouble="+oddDouble);
+				java.math.BigDecimal odd = new java.math.BigDecimal(oddDouble);
+				BigDecimal oo = odd.multiply(new BigDecimal(allCount));
+				oo = oo.setScale(0, BigDecimal.ROUND_HALF_UP);
+				int num = oo.intValue();
+				orignalRates.add(num);
+			}
+			// 生成随机数
+			Random random = new Random();
+			int value = random.nextInt(allCount);
+			//System.out.println("value-----" + value);
+			// awards用于标识中奖类型
+			int awards = -1;
+			// 用于跟踪数据变化，数据区域			
+			cj = listServiceCjrules.get(awards);			
+			temp[0] = awards;//返回第几个中奖
+			temp[1] = cj.getRuleId();
+			if(cj.getAwardvalue()>0){
+				temp[2] = 1;
+			}			
+		return temp;
+	}
+4.如果用户中奖，系统将会通过微信发红包的接口发红包给中奖用户，本过程的核心代码如下所示。
+public void sendRedPacket(String wxOpenid,int ruleId){		
+			ServiceCjrule cj = serviceCjruleService.findCjruleByQrNum(ruleId+"");
+			if(null != serviceCjinfoTemp){					
+					serviceCjinfoService.updateServiceCjrule(cj);
+					//直接调用发送红包，根据状态更新ServiceCjinfo
+					//钱大于0才发送
+					//我们的单位是元，接口的单位是分。所以要换算
+					int moneySend = (int)(serviceCjinfoTemp.getAwardvalue()*100); 
+					if(cj.getAwardvalue()>0){
+						String orderNNo = wxRedPacketService.getOrderNo();
+						serviceCjinfoTemp.setMchBillno(orderNNo);
+						try {
+							//if(true){//测试，暂时不发红包
+							serviceCjinfoTemp.setSuccessState(cjState);
+													} catch (Exception e) {
+							//serviceCjinfoTemp.setMchBillno(orderNNo);
+							//serviceCjinfoService.update(serviceCjinfoTemp);
+							}finally{						
+							serviceCjinfoService.update(serviceCjinfoTemp);
+						}
+					}
+					//就算是0，也要办结的
+					if(0 == serviceCjinfoTemp.getAwardvalue()){
+						serviceCjinfoTemp.setSuccessState(1);
+						serviceCjinfoService.update(serviceCjinfoTemp);
+						System.out.println("就算是0，也要办结的");
+					}
+				}else{
+					System.out.println("发红包--失败");
+				}
+			}
+		}
+	}
+
+二维码管理模块的实现
+1二维码数据管理界面如图6-2所示。
+ 
+图6-2 二维码数据管理界面
+实现的主要代码如下所示。
+public String listByCyear(){
+		sysConfig_list = sysConfigService.findAllReverseCyear();
+		String yearStr = getRequest().getParameter("cyear");
+		if (null !=yearStr && "" != yearStr.trim()){
+			year = Integer.parseInt(yearStr);
+		}else if (sysConfig_list.size()>0){
+			year = sysConfig_list.get(0).getCyear();
+		}
+		String qrState = getRequest().getParameter("qrState");
+		getRequest().getSession().setAttribute("qrState", qrState);
+		pageResult = serviceQrcodeInfoService.findByCyear(year,qrState, getPage(), getRow());
+		qrCodeCount();
+		pageType=1; 
+		setForwardView(LIST_JSP);
+		return SUCCESS;
+	}
+6.2.3 客户数据管理模块
+1.客户基本信息查询的实现界面如下图6-3所示。
+ 
+图6-3 客户基本信息查询界面
+主要实现代码如下。
+public String findByProvinceOrCity(){
+//省
+String cmbProvince = getRequest().getParameter("cmbProvince");
+//市
+String cmbCity = getRequest().getParameter("cmbCity");
+if (null == cmbProvince || "" == cmbProvince.trim()){
+cmbProvince = (String)ActionContext.getContext().getSession().get("cmbProvince");
+cmbCity = (String)ActionContext.getContext().getSession().get("cmbCity");
+}
+pageResult = serviceCustomerInfoService.findByProvinceOrCity(cmbProvince,cmbCity, getPage(), getRow());
+//把查询到的客户信息放到session当中
+ActionContext.getContext().getSession().put("ServiceCustomerInfo", pageResult.getData());
+//用于方便分页
+ActionContext.getContext().getSession().put("cmbProvince", cmbProvince);
+ActionContext.getContext().getSession().put("cmbCity", cmbCity);
+forwardView = LIST_JSP;
+return SUCCESS;
+}
+2.数据报表分析客户信息的实现界面如下图6-4所示。
+ 
+图6-4客户数据报表显示界面
+实现的主要代码如下。
+public String getCoustomerPositionInfoChart(String province,String year,int type) {
+		//客户位置信息及数目
+		List coustomerPositionInfo = serviceCustomerInfoDAO.findCoustomerPositionInfo(province,year,type);
+		//组装圆饼图字符串
+		String str = null;
+		if (coustomerPositionInfo.size()>0){
+			str = "<graph caption='' xAxisName='' yAxisName='' baseFont='宋体' baseFontSize='12' showNames='1' decimalPrecision='2' formatNumberScale='0' >"; 
+			for (int i = 0;i<coustomerPositionInfo.size();i++){
+				Object ob[]=(Object[]) coustomerPositionInfo.get(i);
+				str =str+"<set name='"+ob[0]+"' value='"+ob[1]+"'/>" ;
+			}
+			str = str+"</graph>";
+		}
+		//数据库部分数据有换行符,使字符串换行后不能正常显示，需要去除
+		if(null != str && "" != str){
+			str = str.replaceAll("\r|\n","").trim();
+		}
+		return str;
+	} 
